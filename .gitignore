@@ -1,0 +1,13 @@
+**/__pycache__/** 
+
+# Models
+*.pt
+
+# Data
+/save_dir/
+example_output/
+*.parquet
+*.wav
+*.json
+*.jsonl
+*.txt
