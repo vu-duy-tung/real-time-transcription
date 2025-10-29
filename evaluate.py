@@ -7,8 +7,9 @@ Can be used as a library or standalone script.
 import argparse
 import json
 import os
-from pathlib import Path
 import logging
+from pathlib import Path
+from jiwer import cer 
 
 # Module logger - will use the parent logger when imported
 logger = logging.getLogger(__name__)
@@ -31,36 +32,7 @@ def calculate_cer(reference, hypothesis):
     ref = reference.strip()
     hyp = hypothesis.strip()
 
-    # Handle edge cases: define CER=0 if both empty, else 1.0 when reference empty
-    if len(ref) == 0:
-        return 0.0 if len(hyp) == 0 else 1.0
-
-    # Initialize matrix for dynamic programming
-    m, n = len(ref), len(hyp)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-
-    # Initialize base cases
-    for i in range(m + 1):
-        dp[i][0] = i  # deletions
-    for j in range(n + 1):
-        dp[0][j] = j  # insertions
-
-    # Fill the matrix
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if ref[i-1] == hyp[j-1]:
-                dp[i][j] = dp[i-1][j-1]  # no operation needed
-            else:
-                dp[i][j] = min(
-                    dp[i-1][j] + 1,      # deletion
-                    dp[i][j-1] + 1,      # insertion
-                    dp[i-1][j-1] + 1     # substitution
-                )
-
-    # Calculate CER and clamp to a maximum of 1.0
-    edit_distance = dp[m][n]
-    cer = edit_distance / len(ref)
-    return min(cer, 1.0)
+    return cer(ref, hyp)
 
 
 def load_references(reference_file, language='en'):
