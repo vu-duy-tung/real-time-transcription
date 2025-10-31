@@ -4,18 +4,22 @@ Evaluation module for transcription quality using CER (Character Error Rate).
 Can be used as a library or standalone script.
 """
 
-import argparse
-import json
 import os
+import json
+import string
 import logging
+import argparse
 from pathlib import Path
 from jiwer import cer 
+from opencc import OpenCC
 
 # Module logger - will use the parent logger when imported
 logger = logging.getLogger(__name__)
 
+converter_zh = OpenCC('t2s')
+converter_yue = OpenCC('s2hk')
 
-def calculate_cer(reference, hypothesis):
+def calculate_cer(reference, hypothesis, language):
     """
     Calculate Character Error Rate (CER) between reference and hypothesis strings.
 
@@ -32,6 +36,24 @@ def calculate_cer(reference, hypothesis):
     ref = reference.strip()
     hyp = hypothesis.strip()
 
+    if language in ['yue', 'zh']:
+        # Remove spaces and punctuation for Cantonese/Yue
+        ref = ref.translate(str.maketrans('', '', string.punctuation + ' '))
+        hyp = hyp.translate(str.maketrans('', '', string.punctuation + ' '))
+
+        if language == 'yue':
+            ref = converter_yue.convert(ref)
+            hyp = converter_yue.convert(hyp)
+        elif language == 'zh':
+            ref = converter_zh.convert(ref)
+            hyp = converter_zh.convert(hyp)
+    else:
+        # For other languages, just lower case and strip
+        ref = ref.lower()
+        hyp = hyp.lower()
+        ref = ref.translate(str.maketrans('', '', string.punctuation))
+        hyp = hyp.translate(str.maketrans('', '', string.punctuation))
+
     return cer(ref, hyp)
 
 
@@ -46,7 +68,7 @@ def load_references(reference_file, language='en'):
     Returns:
         dict: Dictionary mapping audio file basenames to reference texts
     """
-    if language == 'auto' or language == 'zh':
+    if language == 'auto':
         language = 'yue'
         
     with open(reference_file, 'r', encoding='utf-8') as f:
@@ -127,7 +149,7 @@ def load_individual_transcriptions(logdir):
     return gen_map
 
 
-def evaluate_transcriptions(references, generated):
+def evaluate_transcriptions(references, generated, language):
     """
     Evaluate generated transcriptions against references using CER.
     
@@ -145,7 +167,7 @@ def evaluate_transcriptions(references, generated):
     for filename, ref_text in references.items():
         if filename in generated:
             gen_text = generated[filename]
-            cer = calculate_cer(ref_text, gen_text)
+            cer = calculate_cer(ref_text, gen_text, language)
             
             results.append({
                 'file': filename,
