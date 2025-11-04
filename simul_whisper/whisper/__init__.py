@@ -3,6 +3,7 @@ import io
 import os
 import urllib
 import warnings
+import copy
 from typing import List, Optional, Union
 
 import torch
@@ -51,6 +52,83 @@ _ALIGNMENT_HEADS = {
 }
 
 
+def convert_wenet_to_whisper_state_dict(wenet_state_dict):
+    """
+    Convert WeNet model state dict to Whisper model state dict by renaming keys.
+    
+    Args:
+        wenet_state_dict: Dictionary containing WeNet model parameters
+        
+    Returns:
+        whisper_state_dict: Dictionary with keys renamed to match Whisper format
+    """
+    whisper_state_dict = {}
+    
+    for name in wenet_state_dict.keys():
+        original_name = copy.deepcopy(name)
+        
+        # Skip WeNet-specific keys that don't exist in Whisper
+        if (name.startswith("ctc.") or 
+            name == "model_state_dict" or 
+            name == "dims" or
+            name == "decoder.output_layer.weight" or
+            name == "decoder.output_layer.bias"):
+            continue
+        
+        # Handle positional embeddings first (special case with squeeze)
+        if original_name == "encoder.embed.pos_enc.pe":
+            name = "encoder.positional_embedding"
+            whisper_state_dict[name] = wenet_state_dict[original_name].squeeze(0)
+        elif original_name == "decoder.embed.1.pe":
+            name = "decoder.positional_embedding"
+            whisper_state_dict[name] = wenet_state_dict[original_name].squeeze(0)
+        else:
+            # Apply reverse string replacements in correct order
+            # Convolution layers
+            name = name.replace("encoder.embed.conv.0", "encoder.conv1")
+            name = name.replace("encoder.embed.conv.2", "encoder.conv2")
+            
+            # Token embedding
+            name = name.replace("decoder.embed.0", "decoder.token_embedding")
+            
+            # Encoder/Decoder blocks
+            name = name.replace("encoder.encoders", "encoder.blocks")
+            name = name.replace("decoder.decoders", "decoder.blocks")
+            
+            # Cross attention (decoder only)
+            name = name.replace(".src_attn.linear_q", ".cross_attn.query")
+            name = name.replace(".src_attn.linear_k", ".cross_attn.key")
+            name = name.replace(".src_attn.linear_v", ".cross_attn.value")
+            name = name.replace(".src_attn.linear_out", ".cross_attn.out")
+            
+            # Self attention
+            name = name.replace(".self_attn.linear_q", ".attn.query")
+            name = name.replace(".self_attn.linear_k", ".attn.key")
+            name = name.replace(".self_attn.linear_v", ".attn.value")
+            name = name.replace(".self_attn.linear_out", ".attn.out")
+            
+            # Feed forward layers
+            name = name.replace("feed_forward.w_1", "mlp.0")
+            name = name.replace("feed_forward.w_2", "mlp.2")
+            
+            # Normalization layers - handle decoder first (more specific)
+            if "decoder" in name:
+                name = name.replace("norm2", "cross_attn_ln")
+                name = name.replace("norm3", "mlp_ln")
+                name = name.replace("norm1", "attn_ln")
+            else:
+                name = name.replace("norm2", "mlp_ln")
+                name = name.replace("norm1", "attn_ln")
+            
+            # Post-encoder/decoder normalization
+            name = name.replace("encoder.after_norm", "encoder.ln_post")
+            name = name.replace("decoder.after_norm", "decoder.ln")
+            
+            whisper_state_dict[name] = wenet_state_dict[original_name]
+    
+    return whisper_state_dict
+
+
 def _download(url: str, root: str, in_memory: bool) -> Union[bytes, str]:
     os.makedirs(root, exist_ok=True)
 
@@ -59,17 +137,6 @@ def _download(url: str, root: str, in_memory: bool) -> Union[bytes, str]:
 
     if os.path.exists(download_target) and not os.path.isfile(download_target):
         raise RuntimeError(f"{download_target} exists and is not a regular file")
-
-    # if download_target == "large-v3.pt":
-    #     download_target = "phowhisper-large.pt"
-    # if download_target == "medium.pt":
-    #     download_target = "whisper_medium_yue.pt"
-
-    # if download_target == "large-v3.pt":
-    #     download_target = "khleeloo-large-v3.pt"
-
-    # if download_target == "large-v3-turbo.pt":
-    #     download_target = "turbo-cantonese-yue-en.pt"
         
     if os.path.isfile(download_target):
         with open(download_target, "rb") as f:
@@ -155,6 +222,13 @@ def load_model(
         raise RuntimeError(
             f"Model {name} not found; available models = {available_models()}"
         )
+    
+
+    # ===== Custom whisper medium =====
+    if name == "medium":
+        checkpoint_file = "whisper_medium_yue.pt"
+    # alignment_heads = None
+    # ================================
 
     with (
         io.BytesIO(checkpoint_file) if in_memory else open(checkpoint_file, "rb")
@@ -162,9 +236,17 @@ def load_model(
         checkpoint = torch.load(fp, map_location=device)
     del checkpoint_file
 
+    # ===== Custom whisper medium =====
+    if name == "medium":
+        checkpoint['model_state_dict'] = convert_wenet_to_whisper_state_dict(checkpoint)
+        checkpoint["dims"] = {'n_mels': 80, 'n_vocab': 51865, 'n_audio_ctx': 1500, 'n_audio_state': 1024, 'n_audio_head': 16, 'n_audio_layer': 24, 'n_text_ctx': 448, 'n_text_state': 1024, 'n_text_head': 16, 'n_text_layer': 24}
+    # ================================
+
     dims = ModelDimensions(**checkpoint["dims"])
     model = Whisper(dims)
     model.load_state_dict(checkpoint["model_state_dict"])
+
+    # import code; code.interact(local=locals())
 
     if alignment_heads is not None:
         model.set_alignment_heads(alignment_heads)
