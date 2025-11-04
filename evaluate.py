@@ -5,7 +5,9 @@ Can be used as a library or standalone script.
 """
 
 import os
+import re
 import json
+import cn2an
 import string
 import logging
 import argparse
@@ -19,18 +21,44 @@ logger = logging.getLogger(__name__)
 converter_zh = OpenCC('t2s')
 converter_yue = OpenCC('s2hk')
 
-def calculate_cer(reference, hypothesis, language):
+def normalize_utterances(text: str, language: str="yue") -> str:
+    # ---- Normalize Script (Language) ----
+    if language == 'yue':         # Cantonese target
+        text = converter_yue.convert(text)
+        # Cantonese numeric writing preferences
+        text = text.replace("两", "兩").replace("万", "萬").replace("亿", "億")
+
+    elif language == 'zh':        # Mandarin target
+        text = converter_zh.convert(text)
+
+    # ---- Normalize Numbers (Arabic → Chinese) ----
+    # Find digits and decimals in text
+    pattern = r"\d+(\.\d+)?"
+
+    # Iterate & replace numbers
+    for match in re.finditer(pattern, text):
+        num = match.group(0)
+        try:
+            chinese_num = cn2an.transform(num, "an2cn")  # number to Chinese
+        except:
+            continue  # skip if conversion fails
+
+        # If Cantonese, convert script style again for number tokens
+        if language == 'yue':
+            chinese_num = converter_yue.convert(chinese_num)
+            chinese_num = chinese_num.replace("两", "兩").replace("万", "萬").replace("亿", "億")
+
+        text = text.replace(num, chinese_num)
+
+    # ---- Normalize English characters to lowercase ----
+    text = ''.join(c.lower() if ord(c) < 128 and c.isalpha() else c for c in text)
+
+    return text
+
+
+def calculate_cer(reference: str, hypothesis: str, language: str) -> float:
     """
     Calculate Character Error Rate (CER) between reference and hypothesis strings.
-
-    CER = min(1.0, (S + D + I) / N)
-    where:
-        S = number of substitutions
-        D = number of deletions
-        I = number of insertions
-        N = number of characters in reference
-
-    Returns CER clipped to at most 1.0 (100%).
     """
     # Normalize strings
     ref = reference.strip()
@@ -40,13 +68,8 @@ def calculate_cer(reference, hypothesis, language):
         # Remove spaces and punctuation for Cantonese/Yue
         ref = ref.translate(str.maketrans('', '', string.punctuation + ' '))
         hyp = hyp.translate(str.maketrans('', '', string.punctuation + ' '))
-
-        if language == 'yue':
-            ref = converter_yue.convert(ref)
-            hyp = converter_yue.convert(hyp)
-        elif language == 'zh':
-            ref = converter_zh.convert(ref)
-            hyp = converter_zh.convert(hyp)
+        ref = normalize_utterances(ref, language=language)
+        hyp = normalize_utterances(hyp, language=language)
     else:
         # For other languages, just lower case and strip
         ref = ref.lower()
@@ -68,7 +91,7 @@ def load_references(reference_file, language='en'):
     Returns:
         dict: Dictionary mapping audio file basenames to reference texts
     """
-    if language == 'auto':
+    if reference_file.endswith('/WSYue-ASR-eval/Short/content.json'):
         language = 'yue'
         
     with open(reference_file, 'r', encoding='utf-8') as f:
