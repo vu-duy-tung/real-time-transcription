@@ -17,6 +17,12 @@ Simultaneous Shared Task.
 - `evaluate.py` - Evaluation script for computing ASR metrics (currently CER)
 - `whisper_streaming/whisper_online_main.py` - Main entry point for real-time streaming transcription with Whisper model
 
+## Current First Token Latency Implementation
+- `start_time` parameter is set before the running the online ASR processing (in `whisper_streaming/whisper_online_main.py`, line 145)
+- The main iteration loop, including adding new audio chunk and inferencing the Whisper model is in `whisper_streaming/whisper_online_main.py`, from line 212 to line 236
+- `start_time` will be passed to the ASR online processor to calculate first token latency (in `whisper_streaming/whisper_online_main.py`, line 225)
+- In the Whisper model inference, `first_token_latency` will be updated when the first token is generated, which is equal to the current time minus the `start_time` we passed to the model (in `simul_whisper/simul_whisper.py`, from line 503 to line 511)
+
 ## Preparation
 ### Install packages
 
