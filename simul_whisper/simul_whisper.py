@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 import wave
 import logging
 
@@ -245,9 +246,10 @@ class PaddedAlignAttWhisper:
         self.init_context()
         
         # Reset FTL tracking for new segment
-        self.first_token_generated = False
-        self.first_token_latency = None
-        self.is_warmup = False
+        if complete:
+            self.first_token_generated = False
+            self.first_token_latency = None
+            self.is_warmup = False
         
         logger.debug(f"Context: {self.context}")
         if not complete and len(self.segments) > 2:
@@ -427,7 +429,7 @@ class PaddedAlignAttWhisper:
         fire_detected = self.fire_at_boundary(encoder_feature[:, :content_mel_len, :])
 
 
-        ####################### Decoding loop
+        ####################### Decoding loop ##########################
         logger.info("Decoding loop starts")
 
         sum_logprobs = torch.zeros(self.cfg.beam_size, device=mel.device)
@@ -470,8 +472,6 @@ class PaddedAlignAttWhisper:
                 tokens_for_logits = current_tokens[:,-1:]
 
             logits = self.logits(tokens_for_logits, encoder_feature) # B, len(tokens), token dict size
-            # if not self.is_warmup:
-            #     import code; code.interact(local=locals())
             if new_segment:
                 generation["logits_starting"] = Logits(logits[:,:,:])
 
@@ -499,33 +499,10 @@ class PaddedAlignAttWhisper:
             generation_progress_loop.append(("beam_tokens",Tokens(current_tokens[:,-1].clone())))
             generation_progress_loop.append(("sum_logprobs",sum_logprobs.tolist()))
             generation_progress_loop.append(("completed",completed))
-            
-            # Track First Token Latency: when the first token is generated (completed == False)
-            # Only track if not in warmup, haven't tracked yet, and have a valid start_time
-            if (not self.is_warmup and not self.first_token_generated and 
-                start_time is not None and completed == False):
-                import time
-                self.first_token_latency = time.time() - infer_start_time
-                self.first_token_generated = True
-                generation["first_token_latency"] = self.first_token_latency
-                # logger.info(f"First Token Latency: {self.first_token_latency*1000:.2f} ms")
 
             logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")
 
             self.debug_print_tokens(current_tokens)
-
-
-            # if self.decoder_type == "beam":
-            #     logger.debug(f"Finished sequences: {self.token_decoder.finished_sequences}")
-
-            #     logprobs = F.log_softmax(logits.float(), dim=-1)
-            #     idx = 0
-            #     logger.debug(f"Beam search topk: {logprobs[idx].topk(self.cfg.beam_size + 1)}")
-            #     logger.debug(f"Greedy search argmax: {logits.argmax(dim=-1)}")
-            # if completed:
-            #     self.debug_print_tokens(current_tokens)
-
-            #     logger.debug("decode stopped because decoder completed")
 
             attn_of_alignment_heads = [[] for _ in range(self.num_align_heads)]
             for i, attn_mat in enumerate(self.dec_attns):
@@ -590,6 +567,12 @@ class PaddedAlignAttWhisper:
                 # stripping the last token, the one that is attended too close to the end
                 current_tokens = current_tokens[:, :-1]
                 break
+
+            if (not self.is_warmup and not self.first_token_generated and 
+                start_time is not None and current_tokens.shape[1] > token_len_before_decoding):
+                self.first_token_latency = time.time() - infer_start_time
+                self.first_token_generated = True
+                generation["first_token_latency"] = self.first_token_latency
         
             # debug print
             for i in range(self.cfg.beam_size):
@@ -600,33 +583,7 @@ class PaddedAlignAttWhisper:
                     self.tokenizer.decode([current_tokens[i, -1].item()])
                 ))
 
-#        for k,v in generation.items():
-#            print(k,v,file=sys.stderr)
-#        for x in generation_progress:
-#            for y in x.items():
-#                print("\t\t",*y,file=sys.stderr)
-#            print("\t","----", file=sys.stderr)
-#        print("\t", "end of generation_progress_loop", file=sys.stderr)
-        #    sys.exit(1)
-        ####################### End of decoding loop
-
         logger.info("End of decoding loop")
-
-        # if attn_of_alignment_heads is not None:
-        #     seg_len = int(segment.shape[0] / 16000 * TOKENS_PER_SECOND)
-
-        #     # Lets' now consider only the top hypothesis in the beam search
-        #     top_beam_attn_of_alignment_heads = attn_of_alignment_heads[0]
-
-        #     # debug print: how is the new token attended?
-        #     new_token_attn = top_beam_attn_of_alignment_heads[token_len_before_decoding:, -seg_len:]
-        #     logger.debug(f"New token attention shape: {new_token_attn.shape}")
-        #     if new_token_attn.shape[0] == 0:  # it's not attended in the current audio segment
-        #         logger.debug("no token generated")
-        #     else:  # it is, and the max attention is:
-        #         new_token_max_attn, _ = new_token_attn.max(dim=-1)
-        #         logger.debug(f"segment max attention: {new_token_max_attn.mean().item()/len(self.segments)}")
-
 
         # let's now operate only with the top beam hypothesis
         tokens_to_split = current_tokens[0, token_len_before_decoding:]
@@ -638,11 +595,6 @@ class PaddedAlignAttWhisper:
             generation["result"] = {"split_words": split_words[:-1], "split_tokens": split_tokens[:-1]}
             generation["result_truncated"] = {"split_words": split_words[-1:], "split_tokens": split_tokens[-1:]}
 
-#            text_to_split = self.tokenizer.decode(tokens_to_split)
-#            logger.debug(f"text_to_split: {text_to_split}")
-#            logger.debug("text at current step: {}".format(text_to_split.replace(" ", "<space>")))
-#            text_before_space = " ".join(text_to_split.split(" ")[:-1])
-#            logger.debug("before the last space: {}".format(text_before_space.replace(" ", "<space>")))
             if len(split_words) > 1:
                 new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]  
             else:
@@ -655,11 +607,8 @@ class PaddedAlignAttWhisper:
             device=self.model.device,
         )
         self.tokens.append(new_tokens)
-        # TODO: test if this is redundant or not
-#        ret = ret[ret<DEC_PAD]
 
         logger.info(f"Output: {self.tokenizer.decode(new_hypothesis)}")
-        
         self._clean_cache()
 
         # self.logdir_save(input_segments, new_hypothesis, generation)
