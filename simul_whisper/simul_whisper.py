@@ -268,7 +268,6 @@ class PaddedAlignAttWhisper:
 
 
     def _current_tokens(self):
-
         toks = self.tokens
         # very first infer: duplicate start of seq to beam_size
         if toks[0].shape[0] == 1:
@@ -283,8 +282,11 @@ class PaddedAlignAttWhisper:
             current_tokens = torch.cat(toks, dim=1)
         else:
             current_tokens = toks[0]
+
         logger.debug("debug print current_tokens:")
-        self.debug_print_tokens(current_tokens)
+        if logger.isEnabledFor(logging.DEBUG):
+            self.debug_print_tokens(current_tokens)
+
         return current_tokens
 
 
@@ -371,6 +373,8 @@ class PaddedAlignAttWhisper:
 
     @torch.no_grad()
     def infer(self, is_last=False, start_time=None):
+        if (not self.is_warmup and not self.first_token_generated and start_time is not None):
+            print(f"Entering infer at {time.time() - start_time:.3f} seconds")
 
         # start_time should be the time when audio processing started (before load_audio_chunk)
         if start_time is None and not self.is_warmup:
@@ -393,8 +397,6 @@ class PaddedAlignAttWhisper:
             input_segments = torch.cat(self.segments, dim=0)
         else:
             input_segments = self.segments[0]
-
-
         
         # mel + padding to 30s
         mel_padded = log_mel_spectrogram(input_segments, n_mels=self.model.dims.n_mels, padding=N_SAMPLES, 
@@ -425,12 +427,15 @@ class PaddedAlignAttWhisper:
 
         self.trim_context()
         current_tokens = self._current_tokens()
-#        
+
         fire_detected = self.fire_at_boundary(encoder_feature[:, :content_mel_len, :])
 
 
         ####################### Decoding loop ##########################
+        if (not self.is_warmup and not self.first_token_generated and start_time is not None):
+            print(f"Entering decoding loop at {time.time() - start_time:.3f} seconds")
         logger.info("Decoding loop starts")
+        t_before_decoding = time.time()
 
         sum_logprobs = torch.zeros(self.cfg.beam_size, device=mel.device)
         completed = False
@@ -462,7 +467,12 @@ class PaddedAlignAttWhisper:
             "first_token_latency": None,
         }
 
+        decode_iter = 0
         while not completed and current_tokens.shape[1] < self.max_text_len: # bos is 3 tokens
+            decode_iter += 1
+            cur_decode_iter_time = time.time()
+            logger.info(f"Decoding iteration {decode_iter}, current tokens len: {current_tokens.shape[1]}")
+            logger.info(f"Decoding time till current iteration: {1000 * (cur_decode_iter_time - t_before_decoding):.3f} ms")
             generation_progress_loop = []
 
             if new_segment:
@@ -522,14 +532,14 @@ class PaddedAlignAttWhisper:
                 t = torch.cat(mat, dim=1)
                 tmp.append(t) 
             attn_of_alignment_heads = torch.stack(tmp, dim=1)
-#            logger.debug(str(attn_of_alignment_heads.shape) + " tttady")
+            # logger.debug(str(attn_of_alignment_heads.shape) + " tttady")
             std, mean = torch.std_mean(attn_of_alignment_heads, dim=-2, keepdim=True, unbiased=False)
             attn_of_alignment_heads = (attn_of_alignment_heads - mean) / std
             attn_of_alignment_heads = median_filter(attn_of_alignment_heads, 7) # from whisper.timing
             attn_of_alignment_heads = attn_of_alignment_heads.mean(dim=1)
-#            logger.debug(str(attn_of_alignment_heads.shape) + " po mean")
+            # logger.debug(str(attn_of_alignment_heads.shape) + " po mean")
             attn_of_alignment_heads = attn_of_alignment_heads[:,:, :content_mel_len]
-#            logger.debug(str(attn_of_alignment_heads.shape) + " pak ")
+            # logger.debug(str(attn_of_alignment_heads.shape) + " pak ")
 
             # for each beam, the most attended frame is:
             most_attended_frames = torch.argmax(attn_of_alignment_heads[:,-1,:], dim=-1)
@@ -542,7 +552,7 @@ class PaddedAlignAttWhisper:
             generation_progress.append(dict(generation_progress_loop))
             logger.debug("current tokens " + str(current_tokens.shape))
             if completed:
-            #    # stripping the last token, the eot
+                # stripping the last token, the eot
                 current_tokens = current_tokens[:, :-1]
                 break
             
@@ -573,7 +583,7 @@ class PaddedAlignAttWhisper:
                 self.first_token_latency = time.time() - infer_start_time
                 self.first_token_generated = True
                 generation["first_token_latency"] = self.first_token_latency
-        
+     
             # debug print
             for i in range(self.cfg.beam_size):
                 logger.debug("attn: {}, current pos: {}, current token: {}({})".format(
@@ -584,6 +594,8 @@ class PaddedAlignAttWhisper:
                 ))
 
         logger.info("End of decoding loop")
+        t_after_decoding = time.time()
+        logger.info(f"Decoding time: {1000 * (t_after_decoding - t_before_decoding):.3f} ms")
 
         # let's now operate only with the top beam hypothesis
         tokens_to_split = current_tokens[0, token_len_before_decoding:]
@@ -596,7 +608,7 @@ class PaddedAlignAttWhisper:
             generation["result_truncated"] = {"split_words": split_words[-1:], "split_tokens": split_tokens[-1:]}
 
             if len(split_words) > 1:
-                new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]  
+                new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]
             else:
                 new_hypothesis = []
 
