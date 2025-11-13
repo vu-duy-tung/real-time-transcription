@@ -11,6 +11,7 @@ import cn2an
 import string
 import logging
 import argparse
+import unicodedata
 from pathlib import Path
 from jiwer import cer 
 from opencc import OpenCC
@@ -21,40 +22,65 @@ logger = logging.getLogger(__name__)
 converter_zh = OpenCC('t2s')
 converter_yue = OpenCC('s2hk')
 
-def normalize_utterances(text: str, language: str="yue") -> str:
-    # ---- Normalize Script (Language) ----
-    if language == 'yue':         # Cantonese target
-        text = converter_yue.convert(text)
-        # Cantonese numeric writing preferences
-        text = text.replace("两", "兩").replace("万", "萬").replace("亿", "億")
 
-    elif language == 'zh':        # Mandarin target
+def normalize_utterances(text: str, language: str = "yue") -> str:
+    # ---- Normalize script ----
+    if language == 'yue':
+        text = converter_yue.convert(text)
+    elif language == 'zh':
         text = converter_zh.convert(text)
 
-    # ---- Normalize Numbers (Arabic → Chinese) ----
-    # Find digits and decimals in text
-    pattern = r"\d+(\.\d+)?"
+    # ---- Normalize percentages and numbers ----
+    # Handle % first
+    percent_pattern = r"(\d+(\.\d+)?)\s*%"
 
-    # Iterate & replace numbers
-    for match in re.finditer(pattern, text):
+    for match in re.finditer(percent_pattern, text):
+        num = match.group(1)
+        try:
+            chinese_num = cn2an.transform(num, "an2cn")
+        except Exception:
+            continue
+        # Convert to "百分之X"
+        percent_text = f"百分之{chinese_num}"
+        if language == 'yue':
+            percent_text = converter_yue.convert(percent_text)
+        else:
+            percent_text = converter_zh.convert(percent_text)
+        text = text.replace(match.group(0), percent_text)
+
+    # ---- Normalize plain digits ----
+    number_pattern = r"\d+(\.\d+)?"
+    for match in re.finditer(number_pattern, text):
         num = match.group(0)
         try:
-            chinese_num = cn2an.transform(num, "an2cn")  # number to Chinese
-        except:
-            continue  # skip if conversion fails
-
-        # If Cantonese, convert script style again for number tokens
+            chinese_num = cn2an.transform(num, "an2cn")
+        except Exception:
+            continue
         if language == 'yue':
             chinese_num = converter_yue.convert(chinese_num)
-            chinese_num = chinese_num.replace("两", "兩").replace("万", "萬").replace("亿", "億")
-
+        else:
+            chinese_num = converter_zh.convert(chinese_num)
         text = text.replace(num, chinese_num)
 
-    # ---- Normalize English characters to lowercase ----
+    # ---- Normalize numeric variants ----
+    replacements = {
+        "两": "二",
+        "兩": "二",
+        "俩": "二",
+        "萬": "万",
+        "億": "亿"
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    # ---- Lowercase English letters ----
     text = ''.join(c.lower() if ord(c) < 128 and c.isalpha() else c for c in text)
 
     return text
 
+def remove_punctuation_unicode(s: str) -> str:
+    # Remove characters whose Unicode category starts with 'P' (punctuation)
+    return ''.join(ch for ch in s if not unicodedata.category(ch).startswith('P'))
 
 def calculate_cer(reference: str, hypothesis: str, language: str) -> float:
     """
@@ -68,6 +94,8 @@ def calculate_cer(reference: str, hypothesis: str, language: str) -> float:
         # Remove spaces and punctuation for Cantonese/Yue
         ref = ref.translate(str.maketrans('', '', string.punctuation + ' '))
         hyp = hyp.translate(str.maketrans('', '', string.punctuation + ' '))
+        ref = remove_punctuation_unicode(ref)
+        hyp = remove_punctuation_unicode(hyp)
         ref = normalize_utterances(ref, language=language)
         hyp = normalize_utterances(hyp, language=language)
     else:
@@ -77,6 +105,8 @@ def calculate_cer(reference: str, hypothesis: str, language: str) -> float:
         ref = ref.translate(str.maketrans('', '', string.punctuation))
         hyp = hyp.translate(str.maketrans('', '', string.punctuation))
 
+    print("Ref:", ref)
+    print("Hyp:", hyp)
     return cer(ref, hyp)
 
 
