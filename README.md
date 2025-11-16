@@ -18,10 +18,13 @@ Simultaneous Shared Task.
 - `whisper_streaming/whisper_online_main.py` - Main entry point for real-time streaming transcription with Whisper model
 
 ## Current First Token Latency Implementation
-- `start_time` parameter is set before the running the online ASR processing (in `whisper_streaming/whisper_online_main.py`, line 145)
-- The main iteration loop, including adding new audio chunk and inferencing the Whisper model is in `whisper_streaming/whisper_online_main.py`, from line 212 to line 236
-- `start_time` will be passed to the ASR online processor to calculate first token latency (in `whisper_streaming/whisper_online_main.py`, line 225)
-- In the Whisper model inference, `first_token_latency` will be updated when the first token is generated, which is equal to the current time minus the `start_time` we passed to the model (in `simul_whisper/simul_whisper.py`, from line 503 to line 511)
+- `start_time` parameter is set after the first non-speech audio chunk is received (in `whisper_streaming/whisper_online_main.py`, line 200)
+- The main iteration loop, including adding new audio chunk and inferencing the Whisper model is in `whisper_streaming/whisper_online_main.py`, from line 193 to line 227
+- `start_time` will be passed to the ASR online processor to calculate first token latency (in `whisper_streaming/whisper_online_main.py`, line 204) and `first_token_latency` is updated if the model generates the first token.
+- In the Whisper model inference, `first_token_latency` will be updated when the first token is generated, which is equal to the current time minus the `start_time` we passed to the model (in `simul_whisper/simul_whisper.py`, from line 589 to line 593)
+
+## Current Last Token Latency Implementation
+- `last_token_latency` is updated in `whisper_streaming/whisper_online_main.py`, from line 213 to line 215.
 
 ## Preparation
 ### Install packages
@@ -102,5 +105,6 @@ bash run_batch_eval_wsyue.sh
 - [x] Preliminary test SimulStreaming on Mandarin (AIShell-1)
 - [x] Preliminary test SimulStreaming on Cantonese (WSYue)
 - [x] Add `whisper-medium-yue` 
+- [ ] Add Last Token Latency
 - [ ] Check First Token Latency implementation, reduce/optimize it to below 1000ms
 
