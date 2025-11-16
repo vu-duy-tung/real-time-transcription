@@ -226,6 +226,8 @@ class SimulWhisperOnline(OnlineProcessorInterface):
         self.audio_bufer_offset += self.model.insert_audio(audio)
         if audio is None and not self.frame_delay:
             self.model.refresh_segment(complete=False)
+        
+        # For debugging
         # print("[PLAY WITH MINO] - Frame delay:", self.frame_delay)
         # print(f"[PLAY WITH MINO] - Inserted audio chunk of shape: {audio.shape if audio is not None else None}")  # DEBUG
         # print(f"[PLAY WITH MINO] - Audio buffer offset: {self.audio_bufer_offset}")  # DEBUG
