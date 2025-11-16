@@ -51,6 +51,7 @@ class VACOnlineASRProcessor(OnlineProcessorInterface):
 
     def insert_audio_chunk(self, audio):
         res = self.vac(audio)
+        logger.info(f"VAD result: {res}")
         self.audio_buffer = np.append(self.audio_buffer, audio)
         if res is not None:
             frame = list(res.values())[0] - self.buffer_offset
@@ -65,8 +66,10 @@ class VACOnlineASRProcessor(OnlineProcessorInterface):
                 self.clear_buffer()
             elif 'end' in res and 'start' not in res:
                 self.status = 'nonvoice'
+                # print("[PLAY WITH MINO] - Detected end of speech at frame:", frame)
                 if frame > 0:
                     send_audio = self.audio_buffer[:frame]
+                    # print("[PLAY WITH MINO] - Sending audio chunk of shape:", send_audio.shape)
                     self.online.insert_audio_chunk(send_audio)
                     self.current_online_chunk_buffer_size += len(send_audio)
                 self.is_currently_final = True
@@ -98,7 +101,10 @@ class VACOnlineASRProcessor(OnlineProcessorInterface):
                 self.buffer_offset += max(0, len(self.audio_buffer) - self.min_buffered_frames)
                 self.audio_buffer = self.audio_buffer[-self.min_buffered_frames:]
 
+        logger.info(f"Current online chunk buffer size: {self.current_online_chunk_buffer_size}")
+
     def process_iter(self, start_time=None):
+        # self.is_currently_final = False
         if self.is_currently_final:
             return self.finish(start_time=start_time)
         elif self.current_online_chunk_buffer_size > self.SAMPLING_RATE*self.online_chunk_size:
@@ -107,10 +113,10 @@ class VACOnlineASRProcessor(OnlineProcessorInterface):
             return ret
         else:
             logger.info(f"no online update, only VAD. {self.status}")
-            return {}
+            return {"first_token_latency": self.first_token_latency}
 
     def finish(self, start_time=None):
         ret = self.online.finish(start_time=start_time)
-        self.current_online_chunk_buffer_size = 0
-        self.is_currently_final = False
+        # self.current_online_chunk_buffer_size = 0
+        self.init()
         return ret

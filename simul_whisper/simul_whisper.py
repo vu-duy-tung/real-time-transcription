@@ -252,12 +252,14 @@ class PaddedAlignAttWhisper:
             self.is_warmup = False
         
         logger.debug(f"Context: {self.context}")
-        if not complete and len(self.segments) > 2:
-            logger.debug("keeping last two segments because they are and it is not complete.")
-            self.segments = self.segments[-2:]
-        else:
-            logger.debug("removing all segments.")
-            self.segments = []
+        # if not complete and len(self.segments) > 2:
+        #     logger.debug("keeping last two segments because they are and it is not complete.")
+        #     self.segments = self.segments[-2:]
+        # else:
+        #     logger.debug("removing all segments.")
+        #     self.segments = []
+        logger.debug("removing all segments.")
+        self.segments = []
         self.log_segments += 1
 
 
@@ -397,6 +399,8 @@ class PaddedAlignAttWhisper:
             input_segments = torch.cat(self.segments, dim=0)
         else:
             input_segments = self.segments[0]
+
+        # print("[PLAY WITH MINO] - Input segments shape:", input_segments.shape)
         
         # mel + padding to 30s
         mel_padded = log_mel_spectrogram(input_segments, n_mels=self.model.dims.n_mels, padding=N_SAMPLES, 
@@ -465,14 +469,17 @@ class PaddedAlignAttWhisper:
             
             # First Token Latency (will be set in the loop if first token is generated)
             "first_token_latency": None,
+
+            # If a token is delayed from generating due to attention reaching the end of audio
+            "frame_delay" : False
         }
 
         decode_iter = 0
         while not completed and current_tokens.shape[1] < self.max_text_len: # bos is 3 tokens
             decode_iter += 1
             cur_decode_iter_time = time.time()
-            logger.info(f"Decoding iteration {decode_iter}, current tokens len: {current_tokens.shape[1]}")
-            logger.info(f"Decoding time till current iteration: {1000 * (cur_decode_iter_time - t_before_decoding):.3f} ms")
+            # logger.info(f"Decoding iteration {decode_iter}, current tokens len: {current_tokens.shape[1]}")
+            # logger.info(f"Decoding time till current iteration: {1000 * (cur_decode_iter_time - t_before_decoding):.3f} ms")
             generation_progress_loop = []
 
             if new_segment:
@@ -572,10 +579,11 @@ class PaddedAlignAttWhisper:
             else:
                 self.last_attend_frame = most_attended_frame
 
-            if content_mel_len - most_attended_frame <= (4 if is_last else self.cfg.frame_threshold):
+            if content_mel_len - most_attended_frame <= (-1 if is_last else self.cfg.frame_threshold):
                 logger.debug(f"attention reaches the end: {most_attended_frame}/{content_mel_len}")
                 # stripping the last token, the one that is attended too close to the end
                 current_tokens = current_tokens[:, :-1]
+                generation["frame_delay"] = True
                 break
 
             if (not self.is_warmup and not self.first_token_generated and 

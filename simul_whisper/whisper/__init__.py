@@ -246,8 +246,6 @@ def load_model(
     model = Whisper(dims)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    # import code; code.interact(local=locals())
-
     if alignment_heads is not None:
         model.set_alignment_heads(alignment_heads)
 

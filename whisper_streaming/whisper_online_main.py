@@ -4,9 +4,11 @@
 # It is refactored and simplified. Only the code that is needed for the 
 # SimulWhisper backend is kept. 
 
-
+import os
 import sys
 import json 
+import torch
+import random
 import numpy as np
 import librosa
 from functools import lru_cache
@@ -20,6 +22,13 @@ logger = logging.getLogger(__name__)
 def load_audio(fname):
     a, _ = librosa.load(fname, sr=16000, dtype=np.float32)
     return a
+
+def random_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def load_audio_chunk(fname, beg, end):
     audio = load_audio(fname)
@@ -169,6 +178,7 @@ def process_single_audio_file(audio_path, args, asr, online, min_chunk, factory)
 
     first_token_latency = None
     last_token_latency = None
+    last_speech_end = None
     
     if args.offline: ## offline mode processing (for testing/debugging)
         a = load_audio(audio_path)
@@ -184,17 +194,25 @@ def process_single_audio_file(audio_path, args, asr, online, min_chunk, factory)
         end = beg + min_chunk
         while True:
             a = load_audio_chunk(audio_path, beg, end)
+            logger.info(f"The system received audio from {beg:.2f} s to {end:.2f} s")
             online.insert_audio_chunk(a)
-            if start_time is None:
+            if first_token_latency is None:
                 start_time = time.time()
+            
+            last_speech_end = time.time()
             try:
                 o = online.process_iter(start_time=start_time)
+                if first_token_latency is None and 'first_token_latency' in o and o['first_token_latency'] is not None:
+                    first_token_latency = o['first_token_latency']
+                    logger.info(f"First Token Latency captured: {first_token_latency*1000:.2f} ms")
             except AssertionError as e:
                 logger.error(f"assertion error: {repr(e)}")
                 pass
             else:
                 output_transcript(o, now=end)
-
+            if 'text' in o:
+                last_token_latency = time.time() - last_speech_end
+                logger.info(f"Last Token Latency updated: {last_token_latency*1000:.2f} ms")
             logger.info(f"## last processed {end:.2f}s\n")
 
             if end >= duration:
@@ -209,8 +227,6 @@ def process_single_audio_file(audio_path, args, asr, online, min_chunk, factory)
         now = duration
     else:  # online = simultaneous mode
         end = 0
-        if start_time is None:
-            start_time = time.time()
         while True:
             now = time.time() - start
             if now < min(end+min_chunk, duration):
@@ -220,10 +236,13 @@ def process_single_audio_file(audio_path, args, asr, online, min_chunk, factory)
             a = load_audio_chunk(audio_path, beg, end)
             beg = end
             online.insert_audio_chunk(a)
+            if first_token_latency is None:
+                start_time = time.time()
             try:
                 o = online.process_iter(start_time=start_time)
                 if first_token_latency is None and 'first_token_latency' in o and o['first_token_latency'] is not None:
-                    first_token_latency = o['first_token_latency'] - end
+                    first_token_latency = o['first_token_latency']
+                    logger.info(f"First Token Latency captured: {first_token_latency*1000:.2f} ms")
             except AssertionError as e:
                 logger.error(f"assertion error: {e}")
                 pass
@@ -237,17 +256,29 @@ def process_single_audio_file(audio_path, args, asr, online, min_chunk, factory)
                 break
         now = None
 
+    # Refresh
+    # print("[PLAY WITH MINO] - Finalizing transcription...")
+    print(online.online.frame_delay)
+    if args.vac and online.online.frame_delay:
+        get_remained_trans = True
+        last_speech_end = time.time()
+    else:
+        get_remained_trans = False
+    o = online.finish(start_time=start_time)
+    if args.vac:
+        online.is_currently_final = False
+    if get_remained_trans == True:
+        # Add last infered speech
+        output_transcript(o, now=now)
+        if 'text' in o:
+            last_token_latency = time.time() - last_speech_end
+            logger.info(f"Last Token Latency updated: {last_token_latency*1000:.2f} ms")
+
     # Get First Token Latency if available
     if first_token_latency is not None:
         print(f"\nFirst Token Latency: {first_token_latency*1000:.2f} ms")
     if last_token_latency is not None:
         print(f"Last Token Latency: {last_token_latency*1000:.2f} ms")
-
-    # Refresh
-    o = online.finish(start_time=start_time)
-    if args.vac:
-        online.is_currently_final = False
-    # output_transcript(o, now=now)
 
     # Concatenate all transcriptions into final output
     final_transcription = ""
@@ -293,7 +324,8 @@ def main_simulation_from_file(factory, add_args=None):
 
     set_logging(args,logger)
 
-    import os
+    random_seed(21)
+
     audio_path = args.audio_path
 
     # Check if batch processing is needed

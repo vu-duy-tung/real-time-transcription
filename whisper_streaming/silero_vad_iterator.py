@@ -1,4 +1,5 @@
 import torch
+import logging
 
 # This is copied from silero-vad's vad_utils.py:
 # https://github.com/snakers4/silero-vad/blob/94811cbe1207ec24bc0f5370b895364b8934936f/src/silero_vad/utils_vad.py#L398C1-L489C20
@@ -6,13 +7,14 @@ import torch
 
 # Their licence is MIT, same as ours: https://github.com/snakers4/silero-vad/blob/94811cbe1207ec24bc0f5370b895364b8934936f/LICENSE
 
+logger = logging.getLogger(__name__)
 class VADIterator:
     def __init__(self,
                  model,
-                 threshold: float = 0.5,
+                 threshold: float = 0.7,
                  sampling_rate: int = 16000,
                  min_silence_duration_ms: int = 500,  # makes sense on one recording that I checked
-                 speech_pad_ms: int = 100             # same 
+                 speech_pad_ms: int = 100,            # same
                  ):
 
         """
@@ -48,7 +50,6 @@ class VADIterator:
         self.reset_states()
 
     def reset_states(self):
-
         self.model.reset_states()
         self.triggered = False
         self.temp_end = 0
@@ -77,6 +78,7 @@ class VADIterator:
         self.current_sample += window_size_samples
 
         speech_prob = self.model(x, self.sampling_rate).item()
+        # print("[PLAY WITH MINO] - ", speech_prob, self.triggered)  # DEBUG
 
         if (speech_prob >= self.threshold) and self.temp_end:
             self.temp_end = 0
@@ -127,12 +129,14 @@ class FixedVADIterator(VADIterator):
                 if 'start' in r and 'end' in ret:  # there is an earlier start.
                     # Remove end, merging this segment with the previous one.
                     del ret['end']
+        logger.info(f"ret: {ret}")
         return ret if ret != {} else None
 
 if __name__ == "__main__":
     # test/demonstrate the need for FixedVADIterator:
 
     import torch
+    import logging
     model, _ = torch.hub.load(
         repo_or_dir='snakers4/silero-vad',
         model='silero_vad'

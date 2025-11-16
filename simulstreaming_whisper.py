@@ -143,6 +143,7 @@ class SimulWhisperOnline(OnlineProcessorInterface):
         self.is_last = False
         self.beg = self.offset
         self.end = self.offset
+        self.frame_delay = False
 
         self.audio_bufer_offset = self.offset
         self.last_ts = -1
@@ -175,10 +176,6 @@ class SimulWhisperOnline(OnlineProcessorInterface):
         assert len(frames) >= len(tokens), f"Frames length {len(frames)} is less than tokens length {len(tokens)}."
         tokens = tokens.copy()
         ret = []
-        # print("[PLAY WITH MINO]", self.unicode_buffer)
-        # print("[PLAY WITH MINO]", len(frames), frames)
-        # print("[PLAY WITH MINO]", len(tokens), tokens)
-        # print("[PLAY WITH MINO]", split_words, split_tokens)
         for sw,st in zip(split_words,split_tokens):
             b = None
             for stt in st:
@@ -227,20 +224,30 @@ class SimulWhisperOnline(OnlineProcessorInterface):
                 self.end += audio.shape[0] / self.SAMPLING_RATE
         self.audio_chunks = []
         self.audio_bufer_offset += self.model.insert_audio(audio)
+        if audio is None and not self.frame_delay:
+            self.model.refresh_segment(complete=False)
+        # print("[PLAY WITH MINO] - Frame delay:", self.frame_delay)
+        # print(f"[PLAY WITH MINO] - Inserted audio chunk of shape: {audio.shape if audio is not None else None}")  # DEBUG
+        # print(f"[PLAY WITH MINO] - Audio buffer offset: {self.audio_bufer_offset}")  # DEBUG
+        # print(f"[PLAY WITH MINO] - Model segments: {[x.shape for x in self.model.segments]}")  # DEBUG
+
         tokens, generation_progress = self.model.infer(is_last=self.is_last, start_time=start_time)
-        
+        if 'frame_delay' in generation_progress and generation_progress['frame_delay']:
+            self.frame_delay = True
+        else:
+            self.frame_delay = False
+
         # Get First Token Latency from generation progress (if it was just calculated)
         if generation_progress and 'first_token_latency' in generation_progress:
             ftl = generation_progress['first_token_latency']
             if ftl is not None and self.first_token_latency is None:
                 self.first_token_latency = ftl
-                logger.info(f"First Token Latency captured: {ftl*1000:.2f} ms")
 
         tokens = self.hide_incomplete_unicode(tokens)
 
         text = self.model.tokenizer.decode(tokens)
         if len(text) == 0:
-            return {}
+            return {'first_token_latency': self.first_token_latency}
         
         # word-level timestamps
         ts_words = self.timestamped_text(tokens, generation_progress)
